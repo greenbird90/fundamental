@@ -8,59 +8,33 @@ import os
 import time
 
 # =========================
-# CONFIG (GITHUB SECRETS)
+# CONFIG
 # =========================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 # =========================
-# LIST SAHAM SYARIAH (CURATED)
+# LIST SAHAM
 # =========================
 stocks = [
-
-# CONSUMER
 "INDF.JK","ICBP.JK","UNVR.JK","MYOR.JK","ROTI.JK",
 "SIDO.JK","KLBF.JK","HMSP.JK","GGRM.JK",
-
-# RETAIL
 "MAPI.JK","ERAA.JK","ACES.JK","RALS.JK",
 "LPPF.JK","AMRT.JK","MIDI.JK","MAPA.JK",
-
-# ENERGY
 "ADRO.JK","ITMG.JK","PTBA.JK","HRUM.JK",
 "INDY.JK","MBAP.JK","BSSR.JK","TOBA.JK",
-
-# MINING
 "ANTM.JK","INCO.JK","MDKA.JK","TINS.JK","NCKL.JK",
-
-# TELEKOMUNIKASI
 "TLKM.JK","EXCL.JK","ISAT.JK","MTEL.JK",
 "TOWR.JK","TBIG.JK",
-
-# INDUSTRI
 "ASII.JK","AUTO.JK","IMAS.JK","UNTR.JK","HEXA.JK",
-
-# PROPERTY
 "SMGR.JK","INTP.JK","WSKT.JK","WIKA.JK",
 "PTPP.JK","ADHI.JK","BSDE.JK","PWON.JK","CTRA.JK",
-
-# AGRI
 "AALI.JK","LSIP.JK","SGRO.JK","TBLA.JK",
 "CPIN.JK","JPFA.JK",
-
-# HEALTH
 "MIKA.JK","SILO.JK","HEAL.JK","CARE.JK",
-
-# TECH
 "GOTO.JK","BUKA.JK","DCII.JK",
-
-# LOGISTIC
 "AKRA.JK","SMDR.JK","WINS.JK","ASSA.JK",
-
-# ENERGY GAS
 "PGAS.JK","MEDC.JK","ELSA.JK","ESSA.JK","RAJA.JK",
-
-# HIGH RISK
 "CUAN.JK","BREN.JK","ARKO.JK"
 ]
 
@@ -69,35 +43,28 @@ stocks = [
 # =========================
 def send_telegram(msg):
     if not TOKEN or not CHAT_ID:
-        print("❌ Token / Chat ID belum diset")
+        print("❌ Token belum diset")
         return
 
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except Exception as e:
-        print("Error Telegram:", e)
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
 # =========================
-# NORMALISASI DATA
+# NORMALISASI
 # =========================
-def normalize_ratio(val):
+def normalize(val):
     try:
         if val is None:
             return 0
-        if val > 1:
-            return val / 100
-        return val
+        return val if val < 1 else val / 100
     except:
         return 0
 
-def normalize_freefloat(ff):
+def normalize_ff(val):
     try:
-        if ff > 1:
-            ff = ff / 100
-        if ff > 1:
-            ff = 1
-        return ff
+        if val > 1:
+            val = val / 100
+        return min(val,1)
     except:
         return 0
 
@@ -114,7 +81,7 @@ def detect_accumulation(hist):
 def detect_multibagger(growth, roe):
     return growth > 0.2 and roe > 0.2
 
-def classify_freefloat(ff):
+def classify_ff(ff):
     if ff < 0.2:
         return "Low Float 🚀"
     elif ff < 0.5:
@@ -126,8 +93,6 @@ def classify_freefloat(ff):
 # MAIN
 # =========================
 results = []
-
-print("🚀 Start Screener...")
 
 for stock in stocks:
     try:
@@ -142,17 +107,16 @@ for stock in stocks:
 
         price = hist["Close"].iloc[-1]
 
-        # FUNDAMENTAL
         pe = info.get("trailingPE", 0)
-        roe = normalize_ratio(info.get("returnOnEquity", 0))
-        growth = normalize_ratio(info.get("revenueGrowth", 0))
-        div = normalize_ratio(info.get("dividendYield", 0))
+        roe = normalize(info.get("returnOnEquity", 0))
+        growth = normalize(info.get("revenueGrowth", 0))
+        div = normalize(info.get("dividendYield", 0))
 
         float_shares = info.get("floatShares", 0)
         shares = info.get("sharesOutstanding", 1)
-        ff = normalize_freefloat(float_shares / shares if shares else 0)
+        ff = normalize_ff(float_shares / shares if shares else 0)
 
-        # TEKNIKAL
+        # teknikal
         hist["rsi"] = ta.momentum.RSIIndicator(hist["Close"]).rsi()
         hist["ma50"] = hist["Close"].rolling(50).mean()
         hist["vol_avg"] = hist["Volume"].rolling(20).mean()
@@ -163,55 +127,75 @@ for stock in stocks:
         vol_avg = hist["vol_avg"].iloc[-1]
         low = hist["Low"].min()
 
-        # DETEKSI
         accumulation = detect_accumulation(hist)
         multibagger = detect_multibagger(growth, roe)
-        ff_label = classify_freefloat(ff)
+        ff_label = classify_ff(ff)
 
-        # SCORING
         score = 0
         labels = []
 
+        # VALUE
         if pe and pe < 15:
             score += 1
             labels.append("Value")
 
+        # ROE
         if roe > 0.15:
             score += 1
 
+        # GROWTH
         if growth > 0.1:
             score += 1
             labels.append("Growth")
 
+        # ❗ GROWTH TAPI ROE JELEK
+        if growth > 0.1 and roe < 0.1:
+            labels.append("⚠️ Growth Lemah")
+            score -= 1
+
+        # ❗ GROWTH NEGATIF
+        if growth < 0:
+            labels.append("⚠️ Declining")
+            score -= 1
+
+        # DIVIDEN NORMAL
         if 0.03 < div < 0.1:
             score += 1
             labels.append("Dividen")
 
-        if div >= 0.1:
-            labels.append("⚠️ DividendTrap")
-            score -= 1
+        # ❗ DIVIDEND TRAP
+        if div >= 0.12:
+            labels.append("⚠️ Dividend Trap")
+            score -= 2
 
+        # ❗ GORENGAN
         if ff < 0.2:
             score -= 2
             labels.append("Gorengan")
 
+        # DISKON
         if price <= low * 1.2:
             score += 1
             labels.append("Diskon")
 
+        # RSI
         if rsi < 40:
             labels.append("Oversold")
 
+        # TREND
         if price > ma50:
             score += 1
 
+        # VOLUME
         if volume > vol_avg * 2:
             labels.append("VolumeSpike")
 
+        # BANDAR
         if accumulation:
             score += 1
             labels.append("Bandar")
 
+        # MULTIBAGGER
         if multibagger:
             score += 2
             labels.append("Multibagger")
@@ -226,7 +210,6 @@ for stock in stocks:
         else:
             status = "❌ Hindari"
 
-        # ICON
         icon = ""
         if 0.04 < div < 0.1:
             icon += "💰"
@@ -254,17 +237,17 @@ for stock in stocks:
         })
 
     except Exception as e:
-        print("❌ Error:", stock, e)
+        print("Error:", stock, e)
 
 # SORT
 results = sorted(results, key=lambda x: x["score"], reverse=True)
 
 # =========================
-# TELEGRAM OUTPUT
+# OUTPUT TELEGRAM
 # =========================
 today = datetime.date.today()
 
-msg = f"🤖 ULTIMATE AI SCREENER\n{today}\n\n"
+msg = f"🤖 ULTIMATE AI SCREENER PRO\n{today}\n\n"
 
 msg += """==============================
 📘 LEGEND
@@ -276,6 +259,11 @@ msg += """==============================
 
 🏦 Bandar      : Akumulasi volume
 🚀 Multibagger : Potensi 3–10x
+
+⚠️ Warning:
+Growth Lemah = Growth tinggi tapi tidak efisien
+Declining    = Revenue turun
+Dividend Trap= Dividen tidak sehat
 
 Free Float:
 Low   = Mudah digerakkan
@@ -306,10 +294,10 @@ Status : {r['status']}
 Label : {r['labels']}
 """
 
-# MARKET
+# MARKET INSIGHT
 msg += "\n==============================\n📊 MARKET INSIGHT\n==============================\n"
 
-avg_rsi = np.mean([r["rsi"] for r in results if not np.isnan(r["rsi"])]) if results else 50
+avg_rsi = np.mean([r["rsi"] for r in results if not np.isnan(r["rsi"])])
 
 if avg_rsi < 40:
     msg += "📉 Market oversold → Potensi rebound\n"
