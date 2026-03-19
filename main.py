@@ -14,9 +14,10 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 # =========================
-# LIST SAHAM
+# LIST SAHAM (PAKAI FULL LIST KAMU)
 # =========================
-stocks = [# ===== JII =====
+stocks = [ 
+# ===== JII =====
 "ADRO.JK","AALI.JK","ANTM.JK","ASII.JK","BRIS.JK",
 "BRMS.JK","BRPT.JK","BUMI.JK","CPIN.JK","DSSA.JK",
 "EXCL.JK","ICBP.JK","INCO.JK","INDF.JK","INKP.JK",
@@ -163,6 +164,7 @@ def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
+
 # =========================
 # NORMALISASI
 # =========================
@@ -182,6 +184,64 @@ def normalize_ff(val):
     except:
         return 0
 
+
+# =========================
+# CLASSIFIER
+# =========================
+def classify_ff(ff):
+    if ff < 0.2:
+        return "Low Float 🚀"
+    elif ff < 0.5:
+        return "Medium Float"
+    else:
+        return "High Float"
+
+def classify_der(der):
+    if der < 0.5:
+        return "Sehat 💪"
+    elif der < 1.5:
+        return "Normal"
+    else:
+        return "Tinggi ⚠️"
+
+
+# =========================
+# ELITE FILTER 🔥
+# =========================
+def is_elite_stock(info, hist):
+    try:
+        # Market Cap > 1T
+        market_cap = info.get("marketCap", 0)
+        if market_cap < 1_000_000_000_000:
+            return False
+
+        # Volume aktif
+        avg_vol = hist["Volume"].rolling(20).mean().iloc[-1]
+        if avg_vol < 1_000_000:
+            return False
+
+        # ROE minimal
+        roe = normalize(info.get("returnOnEquity", 0))
+        if roe < 0.05:
+            return False
+
+        # Free Float
+        float_shares = info.get("floatShares", 0)
+        shares = info.get("sharesOutstanding", 1)
+        ff = normalize_ff(float_shares / shares if shares else 0)
+        if ff < 0.2:
+            return False
+
+        # Hindari perusahaan rugi
+        net_income = info.get("netIncomeToCommon", 0)
+        if net_income and net_income < 0:
+            return False
+
+        return True
+    except:
+        return False
+
+
 # =========================
 # DETEKSI
 # =========================
@@ -195,13 +255,6 @@ def detect_accumulation(hist):
 def detect_multibagger(growth, roe):
     return growth > 0.2 and roe > 0.2
 
-def classify_ff(ff):
-    if ff < 0.2:
-        return "Low Float 🚀"
-    elif ff < 0.5:
-        return "Medium Float"
-    else:
-        return "High Float"
 
 # =========================
 # MAIN
@@ -211,7 +264,7 @@ results = []
 for stock in stocks:
     try:
         ticker = yf.Ticker(stock)
-        time.sleep(1)
+        time.sleep(0.3)
 
         info = ticker.info
         hist = ticker.history(period="6mo")
@@ -219,18 +272,25 @@ for stock in stocks:
         if hist.empty:
             continue
 
+        # 🔥 ELITE FILTER
+        if not is_elite_stock(info, hist):
+            continue
+
         price = hist["Close"].iloc[-1]
 
+        # FUNDAMENTAL
         pe = info.get("trailingPE", 0)
         roe = normalize(info.get("returnOnEquity", 0))
         growth = normalize(info.get("revenueGrowth", 0))
         div = normalize(info.get("dividendYield", 0))
+        der = normalize(info.get("debtToEquity", 0))
 
+        # FREE FLOAT
         float_shares = info.get("floatShares", 0)
         shares = info.get("sharesOutstanding", 1)
         ff = normalize_ff(float_shares / shares if shares else 0)
 
-        # teknikal
+        # TEKNIKAL
         hist["rsi"] = ta.momentum.RSIIndicator(hist["Close"]).rsi()
         hist["ma50"] = hist["Close"].rolling(50).mean()
         hist["vol_avg"] = hist["Volume"].rolling(20).mean()
@@ -243,73 +303,75 @@ for stock in stocks:
 
         accumulation = detect_accumulation(hist)
         multibagger = detect_multibagger(growth, roe)
-        ff_label = classify_ff(ff)
 
+        ff_label = classify_ff(ff)
+        der_label = classify_der(der)
+
+        # =========================
+        # SCORING
+        # =========================
         score = 0
         labels = []
 
-        # VALUE
         if pe and pe < 15:
             score += 1
             labels.append("Value")
 
-        # ROE
         if roe > 0.15:
             score += 1
 
-        # GROWTH
         if growth > 0.1:
             score += 1
             labels.append("Growth")
 
-        # ❗ GROWTH TAPI ROE JELEK
         if growth > 0.1 and roe < 0.1:
             labels.append("⚠️ Growth Lemah")
             score -= 1
 
-        # ❗ GROWTH NEGATIF
         if growth < 0:
             labels.append("⚠️ Declining")
             score -= 1
 
-        # DIVIDEN NORMAL
         if 0.03 < div < 0.1:
             score += 1
             labels.append("Dividen")
 
-        # ❗ DIVIDEND TRAP
         if div >= 0.12:
             labels.append("⚠️ Dividend Trap")
             score -= 2
 
-        # ❗ GORENGAN
         if ff < 0.2:
             score -= 2
             labels.append("Gorengan")
 
-        # DISKON
+        # DER
+        if der < 0.5:
+            score += 1
+        elif der > 1.5:
+            score -= 2
+            labels.append("⚠️ Hutang Tinggi")
+
+        if growth > 0.15 and der > 1.5:
+            labels.append("⚠️ Growth Berhutang")
+            score -= 1
+
         if price <= low * 1.2:
             score += 1
             labels.append("Diskon")
 
-        # RSI
         if rsi < 40:
             labels.append("Oversold")
 
-        # TREND
         if price > ma50:
             score += 1
 
-        # VOLUME
         if volume > vol_avg * 2:
             labels.append("VolumeSpike")
 
-        # BANDAR
         if accumulation:
             score += 1
             labels.append("Bandar")
 
-        # MULTIBAGGER
         if multibagger:
             score += 2
             labels.append("Multibagger")
@@ -324,6 +386,7 @@ for stock in stocks:
         else:
             status = "❌ Hindari"
 
+        # ICON
         icon = ""
         if 0.04 < div < 0.1:
             icon += "💰"
@@ -341,6 +404,8 @@ for stock in stocks:
             "roe": roe,
             "growth": growth,
             "div": div,
+            "der": der,
+            "der_label": der_label,
             "ff": ff,
             "ff_label": ff_label,
             "rsi": rsi,
@@ -357,11 +422,11 @@ for stock in stocks:
 results = sorted(results, key=lambda x: x["score"], reverse=True)
 
 # =========================
-# OUTPUT TELEGRAM
+# TELEGRAM OUTPUT
 # =========================
 today = datetime.date.today()
 
-msg = f"🤖 ULTIMATE AI SCREENER PRO\n{today}\n\n"
+msg = f"🤖 ULTIMATE AI SCREENER PRO (ELITE)\n{today}\n\n"
 
 msg += """==============================
 📘 LEGEND
@@ -374,14 +439,25 @@ msg += """==============================
 🏦 Bandar      : Akumulasi volume
 🚀 Multibagger : Potensi 3–10x
 
-⚠️ Warning:
-Growth Lemah = Growth tinggi tapi tidak efisien
-Declining    = Revenue turun
-Dividend Trap= Dividen tidak sehat
+📊 Fundamental:
+Value   = PER < 15
+Growth  = Revenue naik
+Dividen = Stabil 3–10%
 
-Free Float:
-Low   = Mudah digerakkan
+📊 DER:
+<0.5   = Sehat 💪
+0.5-1.5= Normal
+>1.5   = Risiko tinggi ⚠️
+
+📊 Free Float:
+Low   = Rawan gorengan
 High  = Stabil
+
+🎯 ISSI ELITE FILTER:
+✔ Market Cap > 1T
+✔ Volume aktif
+✔ ROE sehat
+✔ Bukan gorengan
 ==============================
 """
 
@@ -400,6 +476,7 @@ PER : {round(r['pe'],2) if r['pe'] else '-'}
 ROE : {round(r['roe']*100,2)}%
 Growth : {round(r['growth']*100,2)}%
 Dividen : {round(r['div']*100,2)}%
+DER : {round(r['der'],2)} ({r['der_label']})
 Free Float : {round(r['ff']*100,2)}% ({r['ff_label']})
 RSI : {round(r['rsi'],2)}
 
